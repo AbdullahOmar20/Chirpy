@@ -4,14 +4,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
+
 	"github.com/AbdullahOmar20/Chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
-	"log"
 
 	_ "github.com/lib/pq"
 )
@@ -40,6 +43,7 @@ func main(){
 	
 	apiConfig := apiConfig{
 		dbQueries: database.New(db),
+		platform: os.Getenv("PLATFORM"),
 	}
 	
 	fileServer := http.FileServer(http.Dir("."))
@@ -47,8 +51,9 @@ func main(){
 	mux.Handle("/app/", http.StripPrefix("/app" ,apiConfig.midllewareMetricInc(fileServer)))
 	mux.HandleFunc("GET /api/metrics", apiConfig.fileServerHitsHandler)
 	mux.HandleFunc("POST /api/validate_chirp", ValidateChirpHander)
+	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
-	mux.HandleFunc("POST /admin/reset", apiConfig.fileServerHitsResetHandler)
+	mux.HandleFunc("POST /admin/reset", apiConfig.deleteUsersAdminHandler)
 	
 	server.ListenAndServe()
 }
@@ -56,6 +61,7 @@ func main(){
 type apiConfig struct{
 	fileServerHits atomic.Int32
 	dbQueries *database.Queries
+	platform string
 }
 
 func (cfg *apiConfig) midllewareMetricInc(next http.Handler) http.Handler{
@@ -125,6 +131,61 @@ func replaceBadWords(msg string) string{
 
 	result := strings.Join(split, " ")
 	return result
+}
+
+type User struct{
+	Id 			uuid.UUID 	`json:"id"`
+	CreatedAt 	time.Time 	`json:"created_at"`
+	UpdatedAt 	time.Time 	`json:"updated_at"`
+	Email 		string		`json:"email"`
+}
+
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	type userRequest struct{
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+
+	userReq := userRequest{}
+	if err := decoder.Decode(&userReq); err != nil{
+		responseWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(req.Context(), userReq.Email)
+	if err != nil{
+		responseWithError(w, 400, "user already exists")
+		return
+	}
+
+	userResult := User{
+		Id: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	responseWithJson(w, 201, userResult)
+
+}
+
+func (cfg *apiConfig) deleteUsersAdminHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	if cfg.platform != "dev"{
+		responseWithError(w, 403, "Forbidden access")
+		return
+	}
+	
+	err := cfg.dbQueries.DeleteUsers(req.Context())
+	if err != nil{
+		responseWithError(w, 500, "error deleting users")
+		return
+	}
+
+	responseWithJson(w, 200, "")
 }
 
 func responseWithJson(w http.ResponseWriter, code int, payload interface{}) error{
