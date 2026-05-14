@@ -1,9 +1,12 @@
 package main
 
-import(
+import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync/atomic"
-	"fmt"
+	"strings"
+	"slices"
 )
 
 func main(){
@@ -27,6 +30,7 @@ func main(){
 	
 	mux.Handle("/app/", http.StripPrefix("/app" ,apiConfig.midllewareMetricInc(fileServer)))
 	mux.HandleFunc("GET /api/metrics", apiConfig.fileServerHitsHandler)
+	mux.HandleFunc("POST /api/validate_chirp", ValidateChirpHander)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
 	mux.HandleFunc("POST /admin/reset", apiConfig.fileServerHitsResetHandler)
 	
@@ -62,4 +66,61 @@ func (cfg *apiConfig) fileServerHitsResetHandler(writer http.ResponseWriter, req
 	writer.Header().Add("Content-Type", "text/plain; charset=utf-8")
 	writer.WriteHeader(200)
 	cfg.fileServerHits.Store(0)
+}
+
+type Chirp struct {
+	Body string `json:"body"`
+}
+
+func ValidateChirpHander(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+	
+	type responseBody struct{
+		CleandBody string `json:"cleaned_body"`
+	}
+	decoder := json.NewDecoder(req.Body)
+
+	chirp := Chirp{}
+	if err := decoder.Decode(&chirp); err != nil{
+		responseWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	if len(chirp.Body) > 140{
+		responseWithError(w, 400, "Chirp is too long")
+		return
+	}
+
+	responseWithJson(w, 200, responseBody{
+		CleandBody: replaceBadWords(chirp.Body),
+	})
+}
+
+func replaceBadWords(msg string) string{
+	badWords := []string {"kerfuffle", "sharbert", "fornax"}
+
+	split := strings.Split(msg, " ")
+	for indx, s := range split{
+		if slices.Contains(badWords, strings.ToLower(s)){
+			split[indx] = "****"
+		}
+	}
+
+	result := strings.Join(split, " ")
+	return result
+}
+
+func responseWithJson(w http.ResponseWriter, code int, payload interface{}) error{
+	json, err := json.Marshal(payload)
+	if err != nil{
+		return err
+	}
+
+	w.Header().Add("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(json)
+	return nil
+}
+func responseWithError(w http.ResponseWriter, code int, msg string) error{
+	return responseWithJson(w, code, map[string]string{"error": msg})
 }
