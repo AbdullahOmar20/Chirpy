@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -50,7 +51,7 @@ func main(){
 	
 	mux.Handle("/app/", http.StripPrefix("/app" ,apiConfig.midllewareMetricInc(fileServer)))
 	mux.HandleFunc("GET /api/metrics", apiConfig.fileServerHitsHandler)
-	mux.HandleFunc("POST /api/validate_chirp", ValidateChirpHander)
+	mux.HandleFunc("POST /api/chirps", apiConfig.CreateChirpHander)
 	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
 	mux.HandleFunc("POST /admin/reset", apiConfig.deleteUsersAdminHandler)
@@ -92,31 +93,59 @@ func (cfg *apiConfig) fileServerHitsResetHandler(writer http.ResponseWriter, req
 }
 
 type Chirp struct {
-	Body string `json:"body"`
+	ID        uuid.UUID	`json:"id"`
+	CreatedAt time.Time	`json:"created_at"`
+	UpdatedAt time.Time	`json:"updated_at"`
+	Body      string	`json:"body"`
+	UserID    uuid.UUID	`json:"user_id"`
 }
 
-func ValidateChirpHander(w http.ResponseWriter, req *http.Request){
+func (cfg *apiConfig)CreateChirpHander(w http.ResponseWriter, req *http.Request){
 	defer req.Body.Close()
 	
 	type responseBody struct{
 		CleandBody string `json:"cleaned_body"`
 	}
+	type requestBody struct{
+		Body string `json:"body"`
+		UserId uuid.UUID `json:"user_id"`
+	}
 	decoder := json.NewDecoder(req.Body)
 
-	chirp := Chirp{}
-	if err := decoder.Decode(&chirp); err != nil{
+	chirpRequestBody := requestBody{}
+	if err := decoder.Decode(&chirpRequestBody); err != nil{
 		responseWithError(w, 500, "Something went wrong")
 		return
 	}
 
-	if len(chirp.Body) > 140{
-		responseWithError(w, 400, "Chirp is too long")
+	if err := ValidateChirp(chirpRequestBody.Body); err != nil{
+		responseWithError(w, 400, err.Error())
 		return
 	}
 
-	responseWithJson(w, 200, responseBody{
-		CleandBody: replaceBadWords(chirp.Body),
+	chirp, err := cfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{
+		Body: chirpRequestBody.Body,
+		UserID: chirpRequestBody.UserId,
 	})
+	if err != nil{
+		responseWithError(w, 400, "chirp exists")
+		return
+	}
+
+	responseWithJson(w, 201, Chirp{
+		ID: chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	})
+}
+func ValidateChirp(chirp string) error{
+	if len(chirp) > 140{
+		return errors.New("Chirp is too long")
+	}
+
+	return nil
 }
 
 func replaceBadWords(msg string) string{
