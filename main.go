@@ -52,6 +52,8 @@ func main(){
 	mux.Handle("/app/", http.StripPrefix("/app" ,apiConfig.midllewareMetricInc(fileServer)))
 	mux.HandleFunc("GET /api/metrics", apiConfig.fileServerHitsHandler)
 	mux.HandleFunc("POST /api/chirps", apiConfig.CreateChirpHander)
+	mux.HandleFunc("GET /api/chirps", apiConfig.GetChirpsHandler)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiConfig.GetChirpByIdHandler)
 	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
 	mux.HandleFunc("POST /admin/reset", apiConfig.deleteUsersAdminHandler)
@@ -140,6 +142,61 @@ func (cfg *apiConfig)CreateChirpHander(w http.ResponseWriter, req *http.Request)
 		UserID: chirp.UserID,
 	})
 }
+
+func (cfg *apiConfig) GetChirpsHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	chirps, err := cfg.dbQueries.GetChirps(req.Context())
+	if err != nil{
+		responseWithError(w, 500, "error fetching chirps")
+	}
+
+	chirpsResult := []Chirp{}
+	for _, item := range chirps{
+		chirpsResult = append(chirpsResult, Chirp{
+			ID:  item.ID,
+			CreatedAt: item.CreatedAt,
+			UpdatedAt: item.UpdatedAt,
+			Body: item.Body,
+			UserID: item.UserID,
+		})
+	}
+
+	responseWithJson(w, 200, chirpsResult)
+}
+
+func (cfg *apiConfig) GetChirpByIdHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	chirpIDString := req.PathValue("chirpID")
+
+	if len(chirpIDString) == 0{
+		responseWithError(w, 400, "Invalid Id")
+		return
+	}
+
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil{
+		responseWithError(w, 400, "Invalid Id")
+		return
+	}
+
+	chirp, err := cfg.dbQueries.GetChirpById(req.Context(), chirpID)
+	if err != nil{
+		responseWithError(w, 404, "Chirp not found")
+		return
+	}
+
+	result := Chirp{
+		ID:  chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+	responseWithJson(w, 200, result)
+}
+
 func ValidateChirp(chirp string) error{
 	if len(chirp) > 140{
 		return errors.New("Chirp is too long")
