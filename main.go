@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/AbdullahOmar20/Chirpy/internal/database"
+	"github.com/AbdullahOmar20/Chirpy/internal/auth"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 
@@ -55,6 +56,7 @@ func main(){
 	mux.HandleFunc("GET /api/chirps", apiConfig.GetChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiConfig.GetChirpByIdHandler)
 	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
+	mux.HandleFunc("POST /api/login", apiConfig.LoginHandler)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
 	mux.HandleFunc("POST /admin/reset", apiConfig.deleteUsersAdminHandler)
 	
@@ -225,13 +227,13 @@ type User struct{
 	UpdatedAt 	time.Time 	`json:"updated_at"`
 	Email 		string		`json:"email"`
 }
+type userRequest struct{
+	Email string `json:"email"`
+	Password string `json:"password"`
+}
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request){
 	defer req.Body.Close()
-
-	type userRequest struct{
-		Email string `json:"email"`
-	}
 
 	decoder := json.NewDecoder(req.Body)
 
@@ -241,7 +243,16 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	user, err := cfg.dbQueries.CreateUser(req.Context(), userReq.Email)
+	hasedPassword, err := auth.HashPassword(userReq.Password)
+	if err != nil{
+		responseWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(req.Context(), database.CreateUserParams{
+		Email: userReq.Email,
+		HashedPassword: hasedPassword,
+	})
 	if err != nil{
 		responseWithError(w, 400, "user already exists")
 		return
@@ -272,6 +283,43 @@ func (cfg *apiConfig) deleteUsersAdminHandler(w http.ResponseWriter, req *http.R
 	}
 
 	responseWithJson(w, 200, "")
+}
+
+func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	decoder := json.NewDecoder(req.Body)
+
+	userReq := userRequest{}
+	if err := decoder.Decode(&userReq); err != nil{
+		responseWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByEmail(req.Context(), userReq.Email)
+	if err != nil{
+		responseWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	passwordMatch, err := auth.CheckPasswordHash(userReq.Password, user.HashedPassword)
+	if err != nil{
+		responseWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	if passwordMatch == false{
+		responseWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	userResult := User{
+		Id: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	responseWithJson(w, 200, userResult)
 }
 
 func responseWithJson(w http.ResponseWriter, code int, payload interface{}) error{
