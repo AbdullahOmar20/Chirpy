@@ -46,6 +46,7 @@ func main(){
 	apiConfig := apiConfig{
 		dbQueries: database.New(db),
 		platform: os.Getenv("PLATFORM"),
+		secret: os.Getenv("SECRET"),
 	}
 	
 	fileServer := http.FileServer(http.Dir("."))
@@ -67,6 +68,7 @@ type apiConfig struct{
 	fileServerHits atomic.Int32
 	dbQueries *database.Queries
 	platform string
+	secret string
 }
 
 func (cfg *apiConfig) midllewareMetricInc(next http.Handler) http.Handler{
@@ -106,13 +108,17 @@ type Chirp struct {
 
 func (cfg *apiConfig)CreateChirpHander(w http.ResponseWriter, req *http.Request){
 	defer req.Body.Close()
+	userId, err := getUserIdFromValidatedToken(req.Header, cfg.secret)
+	if err != nil{
+		responseWithError(w, 401, "Invalid Token" + err.Error())
+		return
+	}
 	
 	type responseBody struct{
 		CleandBody string `json:"cleaned_body"`
 	}
 	type requestBody struct{
 		Body string `json:"body"`
-		UserId uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(req.Body)
 
@@ -129,7 +135,7 @@ func (cfg *apiConfig)CreateChirpHander(w http.ResponseWriter, req *http.Request)
 
 	chirp, err := cfg.dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{
 		Body: chirpRequestBody.Body,
-		UserID: chirpRequestBody.UserId,
+		UserID: userId,
 	})
 	if err != nil{
 		responseWithError(w, 400, "chirp exists")
@@ -230,6 +236,14 @@ type User struct{
 type userRequest struct{
 	Email string `json:"email"`
 	Password string `json:"password"`
+	ExpiryInSeconds int `json:"expires_in_seconds"`
+}
+type userResponse struct{
+	Id 			uuid.UUID 	`json:"id"`
+	CreatedAt 	time.Time 	`json:"created_at"`
+	UpdatedAt 	time.Time 	`json:"updated_at"`
+	Email 		string		`json:"email"`
+	Token		string		`json:"token"`
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request){
@@ -287,6 +301,7 @@ func (cfg *apiConfig) deleteUsersAdminHandler(w http.ResponseWriter, req *http.R
 
 func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
 	defer req.Body.Close()
+	defaulExpiryTimeInSeconds := 60 * 60
 
 	decoder := json.NewDecoder(req.Body)
 
@@ -313,11 +328,22 @@ func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
 		return
 	}
 
-	userResult := User{
+	if userReq.ExpiryInSeconds == 0 || userReq.ExpiryInSeconds > defaulExpiryTimeInSeconds{
+		userReq.ExpiryInSeconds = defaulExpiryTimeInSeconds
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(userReq.ExpiryInSeconds) * time.Second)
+	if err != nil{
+		responseWithError(w, 401, "error creating token")
+		return
+	}
+
+	userResult := userResponse{
 		Id: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: token,	
 	}
 	responseWithJson(w, 200, userResult)
 }
@@ -335,4 +361,17 @@ func responseWithJson(w http.ResponseWriter, code int, payload interface{}) erro
 }
 func responseWithError(w http.ResponseWriter, code int, msg string) error{
 	return responseWithJson(w, code, map[string]string{"error": msg})
+}
+func getUserIdFromValidatedToken(header http.Header, secret string) (uuid.UUID, error){
+	token, err := auth.GetBearerToken(header)
+	if err != nil{
+		return uuid.Nil, err
+	}
+
+	userId, err := auth.ValidateJWT(token, secret)
+	if err != nil{
+		return uuid.Nil, err
+	}
+
+	return userId, nil
 }
