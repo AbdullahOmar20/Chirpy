@@ -58,6 +58,7 @@ func main(){
 	mux.HandleFunc("POST /api/chirps", apiConfig.CreateChirpHander)
 	mux.HandleFunc("GET /api/chirps", apiConfig.GetChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiConfig.GetChirpByIdHandler)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiConfig.DeleteChirpHandler)
 	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
 	mux.HandleFunc("PUT /api/users", apiConfig.updateUserHandler)
 	mux.HandleFunc("POST /api/login", apiConfig.LoginHandler)
@@ -209,7 +210,47 @@ func (cfg *apiConfig) GetChirpByIdHandler(w http.ResponseWriter, req *http.Reque
 	}
 	responseWithJson(w, 200, result)
 }
+func (cfg *apiConfig) DeleteChirpHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
 
+	chirpIDString := req.PathValue("chirpID")
+	if len(chirpIDString) == 0{
+		responseWithError(w, 400, "Invalid Id")
+		return
+	}
+
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil{
+		responseWithError(w, 400, "Invalid Id")
+		return
+	}
+
+	userId, err := getUserIdFromValidatedToken(req.Header, cfg.secret)
+	if err != nil{
+		responseWithError(w, 401, "Invalid Token" + err.Error())
+		return
+	}
+
+	chirp, err := cfg.dbQueries.GetChirpById(req.Context(), chirpID)
+	if err != nil{
+		responseWithError(w, 404, "Chirp not found")
+		return
+	}
+
+	if chirp.UserID != userId{
+		responseWithError(w, 403, "Access Denied")
+		return
+	}
+
+	err = cfg.dbQueries.DeleteChirp(req.Context(), chirpID)
+	if err != nil{
+		responseWithError(w, 404, "Chirp not found")
+		return
+	}
+
+	responseWithJson(w, 204, "")
+
+}
 func ValidateChirp(chirp string) error{
 	if len(chirp) > 140{
 		return errors.New("Chirp is too long")
