@@ -13,13 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/AbdullahOmar20/Chirpy/internal/database"
 	"github.com/AbdullahOmar20/Chirpy/internal/auth"
+	"github.com/AbdullahOmar20/Chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 
 	_ "github.com/lib/pq"
 )
+const defaulExpiryTimeInSeconds = 60 * 60
+
 
 func main(){
 	godotenv.Load()
@@ -58,6 +60,8 @@ func main(){
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiConfig.GetChirpByIdHandler)
 	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
 	mux.HandleFunc("POST /api/login", apiConfig.LoginHandler)
+	mux.HandleFunc("POST /api/refresh", apiConfig.RefreshJwtTokenHandler)
+	mux.HandleFunc("POST /api/revoke", apiConfig.RevokeJwtTokenHandler)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
 	mux.HandleFunc("POST /admin/reset", apiConfig.deleteUsersAdminHandler)
 	
@@ -236,14 +240,14 @@ type User struct{
 type userRequest struct{
 	Email string `json:"email"`
 	Password string `json:"password"`
-	ExpiryInSeconds int `json:"expires_in_seconds"`
 }
 type userResponse struct{
-	Id 			uuid.UUID 	`json:"id"`
-	CreatedAt 	time.Time 	`json:"created_at"`
-	UpdatedAt 	time.Time 	`json:"updated_at"`
-	Email 		string		`json:"email"`
-	Token		string		`json:"token"`
+	Id 				uuid.UUID 	`json:"id"`
+	CreatedAt 		time.Time 	`json:"created_at"`
+	UpdatedAt 		time.Time 	`json:"updated_at"`
+	Email 			string		`json:"email"`
+	Token			string		`json:"token"`
+	RefreshToken 	string		`json:"refresh_token"`
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request){
@@ -301,7 +305,6 @@ func (cfg *apiConfig) deleteUsersAdminHandler(w http.ResponseWriter, req *http.R
 
 func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
 	defer req.Body.Close()
-	defaulExpiryTimeInSeconds := 60 * 60
 
 	decoder := json.NewDecoder(req.Body)
 
@@ -328,13 +331,20 @@ func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
 		return
 	}
 
-	if userReq.ExpiryInSeconds == 0 || userReq.ExpiryInSeconds > defaulExpiryTimeInSeconds{
-		userReq.ExpiryInSeconds = defaulExpiryTimeInSeconds
-	}
-
-	token, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(userReq.ExpiryInSeconds) * time.Second)
+	token, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(defaulExpiryTimeInSeconds) * time.Second)
 	if err != nil{
 		responseWithError(w, 401, "error creating token")
+		return
+	}
+
+	refreshToken := auth.MakeRefreshToken()
+	err = cfg.dbQueries.CreateRefreshToken(req.Context(), database.CreateRefreshTokenParams{
+		Token: refreshToken,
+		UserID: user.ID,
+		ExpiresAt: time.Now().AddDate(0, 0, 60),
+	})
+	if err != nil{
+		responseWithError(w, 401, "error creating refresh token")
 		return
 	}
 
@@ -343,9 +353,71 @@ func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
-		Token: token,	
+		Token: token,
+		RefreshToken: refreshToken,
 	}
 	responseWithJson(w, 200, userResult)
+}
+
+func (cfg *apiConfig) RefreshJwtTokenHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	type refreshTokenResponse struct{
+		Token string `json:"token"`
+	}
+	
+	refreshToken := req.Header.Get("Authorization")
+
+	if len(refreshToken) == 0{
+		responseWithError(w, 401, "error getting refresh token")
+		return
+	}
+
+	trimmedToken, bearerExists := strings.CutPrefix(refreshToken, "Bearer ")
+	if !bearerExists{
+		responseWithError(w, 401, "Invalid token")
+		return
+	}
+
+	refreshTokenEntity, err := cfg.dbQueries.GetRefreshToken(req.Context(), trimmedToken)
+	if err != nil || time.Now().After(refreshTokenEntity.ExpiresAt) || refreshTokenEntity.RevokedAt.Valid {
+		responseWithError(w, 401, "Invalid token")
+		return
+	}
+
+	accesstoken, err := auth.MakeJWT(refreshTokenEntity.UserID, cfg.secret, time.Duration(defaulExpiryTimeInSeconds) * time.Second)
+	if err != nil{
+		responseWithError(w, 401, "error creating token")
+		return
+	}
+	result := refreshTokenResponse{
+		Token: accesstoken,
+	}
+
+	responseWithJson(w, 200, result)
+}
+func (cfg *apiConfig) RevokeJwtTokenHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	refreshToken := req.Header.Get("Authorization")
+
+	if len(refreshToken) == 0{
+		responseWithError(w, 401, "error getting refresh token")
+		return
+	}
+
+	trimmedToken, bearerExists := strings.CutPrefix(refreshToken, "Bearer ")
+	if !bearerExists{
+		responseWithError(w, 401, "Invalid token")
+		return
+	}
+
+	err := cfg.dbQueries.RevokeRefreshToken(req.Context(), trimmedToken)
+	if err != nil{
+		responseWithError(w, 400, "Token not found")
+	}
+
+	responseWithJson(w, 204, "")
 }
 
 func responseWithJson(w http.ResponseWriter, code int, payload interface{}) error{
