@@ -59,6 +59,7 @@ func main(){
 	mux.HandleFunc("GET /api/chirps", apiConfig.GetChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiConfig.GetChirpByIdHandler)
 	mux.HandleFunc("POST /api/users", apiConfig.createUserHandler)
+	mux.HandleFunc("PUT /api/users", apiConfig.updateUserHandler)
 	mux.HandleFunc("POST /api/login", apiConfig.LoginHandler)
 	mux.HandleFunc("POST /api/refresh", apiConfig.RefreshJwtTokenHandler)
 	mux.HandleFunc("POST /api/revoke", apiConfig.RevokeJwtTokenHandler)
@@ -284,6 +285,54 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request
 	}
 	responseWithJson(w, 201, userResult)
 
+}
+
+func (cfg *apiConfig) updateUserHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	userId, err := getUserIdFromValidatedToken(req.Header, cfg.secret)
+	if err != nil{
+		responseWithError(w, 401, "Invalid Token" + err.Error())
+		return
+	}
+	
+	decoder := json.NewDecoder(req.Body)
+
+	userReq := userRequest{}
+	if err := decoder.Decode(&userReq); err != nil{
+		responseWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	_, err = cfg.dbQueries.GetUserById(req.Context(), userId)
+	if err != nil{
+		responseWithError(w, 400, "User not found")
+		return
+	}
+
+	hasedPassword, err := auth.HashPassword(userReq.Password)
+	if err != nil{
+		responseWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	updatedUser, err := cfg.dbQueries.UpdateUserEmailAndPassword(req.Context(), database.UpdateUserEmailAndPasswordParams{
+		Email: userReq.Email,
+		HashedPassword: hasedPassword,
+		ID: userId,
+	})
+	if err != nil{
+		responseWithError(w, 400, "User not found")
+		return
+	}
+
+	userResult := User{
+		Id: updatedUser.ID,
+		CreatedAt: updatedUser.CreatedAt,
+		UpdatedAt: updatedUser.UpdatedAt,
+		Email: updatedUser.Email,
+	}
+	responseWithJson(w, 200, userResult)
 }
 
 func (cfg *apiConfig) deleteUsersAdminHandler(w http.ResponseWriter, req *http.Request){

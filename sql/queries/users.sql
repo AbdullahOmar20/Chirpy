@@ -12,3 +12,13 @@ RETURNING *;
 -- name: GetUserByEmail :one
 Select * from users
 WHERE email = $1;
+
+-- name: GetUserById :one
+Select * from users
+WHERE id = $1;
+
+-- name: UpdateUserEmailAndPassword :one
+UPDATE users
+SET email = $1, hashed_password = $2
+WHERE id = $3
+RETURNING *;
