@@ -49,6 +49,7 @@ func main(){
 		dbQueries: database.New(db),
 		platform: os.Getenv("PLATFORM"),
 		secret: os.Getenv("SECRET"),
+		PolkaApiKey: os.Getenv("POLKA_KEY"),
 	}
 	
 	fileServer := http.FileServer(http.Dir("."))
@@ -64,6 +65,7 @@ func main(){
 	mux.HandleFunc("POST /api/login", apiConfig.LoginHandler)
 	mux.HandleFunc("POST /api/refresh", apiConfig.RefreshJwtTokenHandler)
 	mux.HandleFunc("POST /api/revoke", apiConfig.RevokeJwtTokenHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", apiConfig.upgradeUserToChirpyRedHandler)
 	mux.HandleFunc("GET /admin/metrics", apiConfig.fileServerHitsAdminHandler)
 	mux.HandleFunc("POST /admin/reset", apiConfig.deleteUsersAdminHandler)
 	
@@ -75,6 +77,7 @@ type apiConfig struct{
 	dbQueries *database.Queries
 	platform string
 	secret string
+	PolkaApiKey string
 }
 
 func (cfg *apiConfig) midllewareMetricInc(next http.Handler) http.Handler{
@@ -278,6 +281,7 @@ type User struct{
 	CreatedAt 	time.Time 	`json:"created_at"`
 	UpdatedAt 	time.Time 	`json:"updated_at"`
 	Email 		string		`json:"email"`
+	IsChirpyRed bool		`json:"is_chirpy_red"`
 }
 type userRequest struct{
 	Email string `json:"email"`
@@ -290,6 +294,7 @@ type userResponse struct{
 	Email 			string		`json:"email"`
 	Token			string		`json:"token"`
 	RefreshToken 	string		`json:"refresh_token"`
+	IsChirpyRed		bool		`json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request){
@@ -323,6 +328,7 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, req *http.Request
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	responseWithJson(w, 201, userResult)
 
@@ -372,6 +378,7 @@ func (cfg *apiConfig) updateUserHandler(w http.ResponseWriter, req *http.Request
 		CreatedAt: updatedUser.CreatedAt,
 		UpdatedAt: updatedUser.UpdatedAt,
 		Email: updatedUser.Email,
+		IsChirpyRed: updatedUser.IsChirpyRed.Bool,
 	}
 	responseWithJson(w, 200, userResult)
 }
@@ -391,6 +398,43 @@ func (cfg *apiConfig) deleteUsersAdminHandler(w http.ResponseWriter, req *http.R
 	}
 
 	responseWithJson(w, 200, "")
+}
+
+func (cfg *apiConfig) upgradeUserToChirpyRedHandler(w http.ResponseWriter, req *http.Request){
+	defer req.Body.Close()
+
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil || apiKey != cfg.PolkaApiKey{
+		responseWithError(w, 401, "Invalid key")
+	}
+
+	type RequestBody struct{
+		Event string `json:"event"`
+		Data struct {
+			UserId uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+
+	requestBody := RequestBody{}
+
+	decoder := json.NewDecoder(req.Body)
+	if err := decoder.Decode(&requestBody); err != nil{
+		responseWithError(w, 404, "Can not find user")
+		return
+	}
+
+	if requestBody.Event != "user.upgraded"{
+		responseWithJson(w, 204, "")
+		return
+	}
+
+	err = cfg.dbQueries.UpgradeUserToChirpyRed(req.Context(), requestBody.Data.UserId)
+	if err != nil{
+		responseWithError(w, 404, "Can not find user")
+		return
+	}
+
+	responseWithJson(w, 204, "")
 }
 
 func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
@@ -445,6 +489,7 @@ func (cfg *apiConfig) LoginHandler(w http.ResponseWriter, req *http.Request){
 		Email: user.Email,
 		Token: token,
 		RefreshToken: refreshToken,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	responseWithJson(w, 200, userResult)
 }
