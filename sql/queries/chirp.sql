@@ -10,7 +10,10 @@ VALUES(
 RETURNING *;
 
 -- name: GetChirps :many
-select * from chirps ORDER BY created_at;
+select * from chirps 
+WHERE (user_id = $1 
+    OR NOT @filter_by_user_id::bool)
+ORDER BY created_at;
 
 -- name: GetChirpById :one
 select * from chirps 

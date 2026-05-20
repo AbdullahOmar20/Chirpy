@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"sort"
 
 	"github.com/AbdullahOmar20/Chirpy/internal/auth"
 	"github.com/AbdullahOmar20/Chirpy/internal/database"
@@ -163,9 +164,22 @@ func (cfg *apiConfig)CreateChirpHander(w http.ResponseWriter, req *http.Request)
 func (cfg *apiConfig) GetChirpsHandler(w http.ResponseWriter, req *http.Request){
 	defer req.Body.Close()
 
-	chirps, err := cfg.dbQueries.GetChirps(req.Context())
+	s := req.URL.Query().Get("author_id")
+	filterByAuthorId := true
+	id, err := uuid.Parse(s)
+	if err != nil {
+		filterByAuthorId = false
+	}
+
+	sortBy := req.URL.Query().Get("sort")
+
+	chirps, err := cfg.dbQueries.GetChirps(req.Context(), database.GetChirpsParams{
+		UserID: id,
+		FilterByUserID: filterByAuthorId,
+	})
 	if err != nil{
-		responseWithError(w, 500, "error fetching chirps")
+		responseWithError(w, 500, "error fetching chirps" + err.Error())
+		return
 	}
 
 	chirpsResult := []Chirp{}
@@ -177,6 +191,15 @@ func (cfg *apiConfig) GetChirpsHandler(w http.ResponseWriter, req *http.Request)
 			Body: item.Body,
 			UserID: item.UserID,
 		})
+	}
+
+	if len(sortBy) > 0{
+		switch sortBy {
+		case "asc":
+			sort.Slice(chirpsResult, func (i, j int) bool { return chirpsResult[i].CreatedAt.Before(chirpsResult[j].CreatedAt)})
+		case "desc":
+			sort.Slice(chirpsResult, func (i, j int) bool { return chirpsResult[i].CreatedAt.After(chirpsResult[j].CreatedAt)})
+		}
 	}
 
 	responseWithJson(w, 200, chirpsResult)
